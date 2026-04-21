@@ -118,7 +118,7 @@ interface Args {
   noSession?: boolean; // --no-session
   fork?: string;       // --fork <session>
   
-  // 模型选���
+  // 模型选择
   model?: string;      // --model <pattern>
   provider?: string;  // --provider <name>
   models?: string[];  // --models <patterns>

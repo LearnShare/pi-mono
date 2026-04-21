@@ -8,8 +8,8 @@
 
 | 任务 | 文档 | 状态 | 备注 |
 |------|------|------|------|
-| 项目结构与依赖分析 | 01-architecture-overview.md | 待完成 | |
-| 核心数据流设计分析 | 01-architecture-overview.md | 待完成 | |
+| 项目结构与依赖分析 | 01-architecture-overview.md | 已完成 | PR #1 |
+| 核心数据流设计分析 | 01-architecture-overview.md | 已完成 | PR #1 |
 
 ### 阶段二：专题分析
 
@@ -31,10 +31,10 @@
 
 ### 01-architecture-overview.md
 
-- [ ] 包含完整的包依赖关系图
-- [ ] 说明七个包的职责和位置
-- [ ] 涵盖核心数据流
-- [ ] 说明四种工作模式的区别
+- [x] 包含完整的包依赖关系图
+- [x] 说明七个包的职责和位置
+- [x] 涵盖核心数据流
+- [x] 说明四种工作模式的区别
 
 ### 02-pi-ai-typesystem.md
 

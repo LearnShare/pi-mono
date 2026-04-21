@@ -1,723 +1,354 @@
-# pi-tui 终端 UI 系统
+# pi-tui 终端 UI 系统分析
 
-## 概述
+## 一、概述
 
-pi-tui 是终端 UI 库，提供差分渲染的交互式界面。
+pi-tui 是 PI MONO 项目的终端 UI 库，提供基于终端的文本用户界面实现。其核心设计目标是**高效渲染**和**组件化**。
 
-**核心目标**:
-- 差分渲染 (只重绘变化部分)
-- 组件系统
-- 键盘处理
-- 焦点管理
-- 光标定位
-
-## 文件结构
+### 核心文件结构
 
 ```
-packages/tui/
-├── src/
-│   ├── index.ts            # 入口
-│   ├── tui.ts          # 主类 (~1243 行)
-│   ├── terminal.ts     # 终端接口
-│   ├── component.ts   # 组件基类
-│   ├── keys.ts      # 按键处理
-│   ├── keybindings.ts
-│   ├── undo-stack.ts
-│   ├── kill-ring.ts
-│   ├── stdin-buffer.ts
-│   ├── fuzzy.ts
-│   ├── autocomplete.ts
-│   ├── utils.ts
-│   ├── editor-component.ts
-│   └── components/
-│       ├── box.ts
-│       ├── text.ts
-│       ├── input.ts
-│       ├── select-list.ts
-│       ├── editor.ts
-│       ├── loader.ts
-│       ├── image.ts
-│       ├── markdown.ts
-│       ├── settings-list.ts
-│       ├── truncated-text.ts
-│       └── ...
+packages/tui/src/
+├── tui.ts                    # 核心 TUI 类和差分渲染引擎
+├── components/               # 内置组件
+│   ├── text.ts             # 文本显示
+│   ├── box.ts             # 布局容器
+│   ├── input.ts           # 输入组件
+│   ├── editor.ts          # 编辑器组件
+│   ├── markdown.ts        # Markdown 渲染
+│   ├── select-list.ts     # 选择列表
+│   ├── settings-list.ts   # 设置列表
+│   ├── truncated-text.ts  # 截断文本
+│   ├── spacer.ts         # 空白组件
+│   ├── image.ts         # 图像组件
+│   ├── loader.ts        # 加载指示器
+│   └── cancellable-loader.ts
+├── terminal.ts            # 终端接口抽象
+├── terminal-image.ts    # 终端图像支持
+├── keys.ts             # 键盘输入处理
+├── keybindings.ts       # 键绑定管理
+├── autocomplete.ts      # 自动补全
+├── utils.ts           # 工具函数
+└── index.ts          # 导出入口
 ```
 
-## 核心接口
+## 二、差分渲染策略
 
-### Component 接口
+pi-tui 的核心渲染策略在 `TUI.doRender()` 方法中实现,采用三层策略优化渲染性能。
+
+### 2.1 第一层:完全重新渲染
+
+在以下情况下执行完全重新渲染:
+
+- **首次渲染**: 之前没有渲染过内容 (`previousLines.length === 0`)
+- **终端宽度变化**: 宽度变化会改变文本换行,必须重新计算所有行
+- **终端高度变化** (非 Termux 环境): 视口大小变化需要重新对齐
+- **内容缩小且无 overlay**: 内容明显变少时清空多余行
 
 ```typescript
+// packages/tui/src/tui.ts:918
+const fullRender = (clear: boolean): void => {
+    this.fullRedrawCount += 1;
+    let buffer = "\x1b[?2026h"; // Begin synchronized output
+    if (clear) buffer += "\x1b[2J\x1b[H\x1b[3J"; // Clear screen, home, clear scrollback
+    // ... render all lines
+    buffer += "\x1b[?2026l"; // End synchronized output
+};
+```
+
+**同步输出模式**: 使用 `DECSC line ( Synchronized Output )` 序列 (`\x1b[?2026h/l`) 防止终端在渲染过程中刷新屏幕,避免闪烁。
+
+### 2.2 第二层:差分渲染
+
+当只有部分内容变化时,只更新变化的行:
+
+1. 逐行比较 `previousLines` 和 `newLines`,找到 `firstChanged` 和 `lastChanged`
+2. 只渲染从 `firstChanged` 到 `lastChanged` 的行
+3. 清除多余的旧行
+4. 更新硬件光标位置
+
+```typescript
+// packages/tui/src/tui.ts:984-998
+for (let i = 0; i < maxLines; i++) {
+    const oldLine = i < this.previousLines.length ? this.previousLines[i] : "";
+    const newLine = i < newLines.length ? newLines[i] : "";
+    if (oldLine !== newLine) {
+        if (firstChanged === -1) firstChanged = i;
+        lastChanged = i;
+    }
+}
+```
+
+### 2.3 第三层:无操作优化
+
+当检测到完全没有变化时:
+
+- 不执行任何渲染
+- 仍然更新硬件光标位置 (支持 IME 输入法候选窗口)
+
+```typescript
+// packages/tui/src/tui.ts:1009
+if (firstChanged === -1) {
+    this.positionHardwareCursor(cursorPos, newLines.length);
+    this.previousViewportTop = prevViewportTop;
+    this.previousHeight = height;
+    return;
+}
+```
+
+### 2.4 渲染性能优化
+
+| 优化技术 | 说明 |
+|---------|------|
+| 最小渲染区间 | 只渲染变化的行,不是整个屏幕 |
+| 内容缓存 | 每个组件缓存上一次渲染的结果 |
+| 渲染节流 | 最小渲染间隔 16ms (约 60fps) |
+| 宽字符处理 | 正确处理 CJK 宽字符和 ANSI 转义序列 |
+| 最大行数追踪 | 追踪历史最大渲染行数,避免频繁重排 |
+
+## 三、组件系统
+
+### 3.1 Component 接口
+
+所有组件必须实现 `Component` 接口:
+
+```typescript
+// packages/tui/src/tui.ts:17
 export interface Component {
-  // 渲染到行数组
-  render(width: number): string[];
-  
-  // 处理键盘输入 (有焦点时)
-  handleInput?(data: string): void;
-  
-  // 是否需要键盘释放事件 (Kitty 协议)
-  wantsKeyRelease?: boolean;
-  
-  // 失效缓存
-  invalidate(): void;
+    render(width: number): string[];
+    handleInput?(data: string): void;
+    wantsKeyRelease?: boolean;
+    invalidate(): void;
 }
 ```
 
-### Focusable 接口
+### 3.2 内置组件列表
+
+| 组件 | 文件 | 用途 |
+|------|------|------|
+| **Text** | `components/text.ts` | 多行文本显示,支持自动换行 |
+| **Box** | `components/box.ts` | 布局容器,包含子组件 |
+| **Input** | `components/input.ts` | 单行文本输入 |
+| **Editor** | `components/editor.ts` | 多行代码编辑器,支持语法高亮和高级编辑 |
+| **Markdown** | `components/markdown.ts` | Markdown 渲染 |
+| **SelectList** | `components/select-list.ts` | 可滚动选择列表 |
+| **SettingsList** | `components/settings-list.ts` | 设置项列表 |
+| **TruncatedText** | `components/truncated-text.ts` | 截断文本,显示省略号 |
+| **Spacer** | `components/spacer.ts` | 空白占位组件 |
+| **Image** | `components/image.ts` | 终端图像渲染 (iTerm2/Kitty 协议) |
+| **Loader** | `components/loader.ts` | 加载动画指示器 |
+| **CancellableLoader** | `components/cancellable-loader.ts` | 可取消的加载指示器 |
+
+### 3.3 Text 组件示例
 
 ```typescript
+import { Text } from "@anthropic-ai/pi-tui";
+
+const text = new Text("Hello, World!", 1, 1);
+const lines = text.render(80);
+console.log(lines);
+```
+
+### 3.4 Focusable 接口
+
+支持焦点和硬件光标的组件实现 `Focusable` 接口:
+
+```typescript
+// packages/tui/src/tui.ts:52
 export interface Focusable {
-  // TUI 设置焦点时
-  focused: boolean;
+    focused: boolean;
 }
 ```
 
-### 行渲染
+当组件获得焦点时,在渲染输出中插入 `CURSOR_MARKER` (`\x1b_pi:c\x07`),TUI 会找到并定位硬件光标。
 
 ```typescript
-// 组件渲染返回行数组
-render(width: number): string[];
-
-// 示例
-const component = new Text("Hello World");
-const lines = component.render(80);
-// ["Hello World"]
-```
-
-### 光标标记
-
-```typescript
-// 光标位置标记 - 零宽转义序列
+// packages/tui/src/tui.ts:68
 export const CURSOR_MARKER = "\x1b_pi:c\x07";
-
-// 组件在 Focusable 实现中
-render(width: number): string[] {
-  if (this.focused) {
-    return [CURSOR_MARKER + "text here"];
-  }
-  return ["text here"];
-}
 ```
 
-## TUI 类
+## 四、Overlay 系统
 
-### 主类定义
+Overlay 是渲染在基础内容之上的浮动组件,用于模态对话框、选择列表等场景。
+
+### 4.1 OverlayOptions
 
 ```typescript
-export class Container implements Component {
-  children: Component[] = [];
-  
-  addChild(component: Component): void { ... }
-  removeChild(component: Component): void { ... }
-  clear(): void { ... }
-  invalidate(): void { ... }
-  render(width: number): string[] { ... }
-}
-
-export class TUI extends Container {
-  private focusedComponent: Component | null = null;
-  private children: Component[] = [];
-  
-  // 生命周期
-  start(): void { ... }    // 开始事件循环
-  stop(): void { ... }     // 停止
-  
-  // 焦点管理
-  setFocus(component: Component | null): void { ... }
-  getFocused(): Component | null { ... }
-  
-  // 渲染
-  render(): string[] { ... }
-  
-  // 添加子组件
-  addChild(component: Component): void { ... }
-  
-  // 清除
-  clear(): void { ... }
+export interface OverlayOptions {
+    width?: SizeValue;           // 宽度或百分比
+    minWidth?: number;
+    maxHeight?: SizeValue;       // 最大高度或百分比
+    anchor?: OverlayAnchor; // 锚点位置
+    offsetX?: number;
+    offsetY?: number;
+    row?: SizeValue;       // 行位置
+    col?: SizeValue;      // 列位置
+    margin?: OverlayMargin | number;
+    visible?: (termWidth: number, termHeight: number) => boolean;
+    nonCapturing?: boolean;
 }
 ```
 
-### 生命周期
+### 4.2 使用方式
 
 ```typescript
 const tui = new TUI(terminal);
-
-// 添加组件
-tui.addChild(header);
-tui.addChild(messages);
-tui.addChild(editor);
-tui.addChild(footer);
-
-// 开始
-tui.start();
-
-// 停止
-tui.stop();
-```
-
-### 焦点管理
-
-```typescript
-// 设置焦点
-tui.setFocus(editorComponent);
-
-// 移除焦点
-tui.setFocus(null);
-
-// 检查焦点
-const focused = tui.getFocused();
-```
-
-## 容器实现
-
-```typescript
-class Container implements Component {
-  children: Component[] = [];
-  
-  addChild(component: Component): void {
-    this.children.push(component);
-  }
-  
-  removeChild(component: Component): void {
-    const index = this.children.indexOf(component);
-    if (index !== -1) {
-      this.children.splice(index, 1);
-    }
-  }
-  
-  clear(): void {
-    this.children = [];
-  }
-  
-  invalidate(): void {
-    for (const child of this.children) {
-      child.invalidate?.();
-    }
-  }
-  
-  render(width: number): string[] {
-    const lines: string[] = [];
-    for (const child of this.children) {
-      lines.push(...child.render(width));
-    }
-    return lines;
-  }
-}
-```
-
-## 预置组件
-
-### 文本组件
-
-```typescript
-class Text implements Component {
-  constructor(private text: string) {}
-  
-  render(width: number): string[] {
-    return [this.text];
-  }
-}
-```
-
-### Box 组件
-
-```typescript
-interface BoxOptions {
-  border?: boolean;
-  borderStyle?: "single" | "double" | "rounded";
-  padding?: number;
-  margin?: number;
-}
-
-class Box implements Component {
-  private content: Component;
-  
-  constructor(content: Component, options: BoxOptions = {}) { ... }
-  
-  render(width: number): string[] { ... }
-}
-```
-
-### Spacer 组件
-
-```typescript
-class Spacer implements Component {
-  constructor(private minHeight: number = 1, private maxHeight?: number) { ... }
-  
-  render(width: number): string[] { ... }
-}
-```
-
-### Loader 组件
-
-```typescript
-class Loader implements Component {
-  constructor(
-    private message: string = "Loading",
-    private frames: string[] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"],
-  ) {}
-  
-  render(width: number): string[] { ... }
-  
-  // 动画状态
-  private frame = 0;
-  tick(): void { ... }
-}
-```
-
-### Image 组件 (终端图像)
-
-```typescript
-class Image implements Component {
-  constructor(
-    private data: string,  // Base64
-    private mimeType: string,
-    options?: ImageOptions,
-  ) {}
-  
-  render(width: number): string[] { ... }
-}
-```
-
-### Input 组件
-
-```typescript
-class Input implements Component, Focusable {
-  focused: boolean = false;
-  private value: string = "";
-  private cursor: number = 0;
-  
-  constructor(options: InputOptions = {}) { ... }
-  
-  handleInput(data: string): void {
-    switch (data) {
-      case "backspace":
-        // 删除字符
-        break;
-      case "left":
-        // 光标左移
-        break;
-      case "right":
-        // 光标右移
-        break;
-      case "enter":
-        // 提交
-        break;
-      default:
-        // 插入字符
-        this.value = this.value.slice(0, this.cursor) + data + this.value.slice(this.cursor);
-        this.cursor += data.length;
-        break;
-    }
-  }
-  
-  render(width: number): string[] { ... }
-  
-  invalidate(): void { ... }
-}
-```
-
-### SelectList 组件
-
-```typescript
-class SelectList implements Component, Focusable {
-  focused: boolean = false;
-  private items: string[] = [];
-  private selected: number = 0;
-  private scroll: number = 0;
-  
-  constructor(items: string[], options: SelectListOptions = {}) { ... }
-  
-  handleInput(data: string): void {
-    switch (data) {
-      case "up":
-        this.selected = Math.max(0, this.selected - 1);
-        break;
-      case "down":
-        this.selected = Math.min(this.items.length - 1, this.selected + 1);
-        break;
-      case "enter":
-        this.selectedIndex = this.selected;
-        break;
-      case " Home":
-        this.selected = 0;
-        break;
-      case " End":
-        this.selected = this.items.length - 1;
-        break;
-    }
-  }
-  
-  render(width: number): string[] { ... }
-}
-```
-
-### EditorComponent
-
-```typescript
-class EditorComponent implements Component, Focusable {
-  focused: boolean = false;
-  private content: string[] = [];
-  private scroll: number = 0;
-  private cursor: { row: number; col: number } = { row: 0, col: 0 };
-  
-  handleInput(data: string): void {
-    // 完整编辑器处理
-  }
-  
-  render(width: number): string[] { ... }
-}
-```
-
-## 差分渲染
-
-### 渲染优化
-
-```typescript
-class OptimizedComponent implements Component {
-  private cache: string[] = [];
-  
-  render(width: number): string[] {
-    const newLines = this.compute(width);
-    
-    // 差分: 只输出变化部分
-    if (this.cachedLines.length !== newLines.length) {
-      this.cache = newLines;
-      return newLines;
-    }
-    
-    // 逐行比较
-    const diff: string[] = [];
-    for (let i = 0; i < newLines.length; i++) {
-      if (this.cache[i] !== newLines[i]) {
-        diff.push(newLines[i]);
-      }
-    }
-    
-    this.cache = newLines;
-    return diff;
-  }
-  
-  invalidate(): void {
-    this.cache = [];
-  }
-}
-```
-
-### 渲染输出
-
-```typescript
-// 差分更新
-const diff = computeRenderDiff(currentContent, newContent);
-
-// ANSI 转义序列
-const clear = "\x1b[J";
-const cursorHome = "\x1b[H";
-const clearLine = "\x1b[2K";
-
-// 完整刷新
-terminal.write(cursorHome + clear + lines.join("\r\n"));
-
-// 差分刷新
-terminal.write(diff.map((line, i) => {
-  return `\x1b[${i + 1};1H${line}`;
-}).join("\r\n"));
-```
-
-## 终端接口
-
-### Terminal 接口
-
-```typescript
-interface Terminal {
-  // 基础
-  write(data: string): void;
-  writeRaw(data: string): void;
-  
-  // 大小
-  get width(): number;
-  get height(): number;
-  onResize(callback: (width: number, height: number) => void): void;
-  
-  // 输入
-  onData(callback: (data: string) => void): void;
-  onKey(callback: (key: Key) => void): void;
-  
-  // 特性
-  isUnsupported?: boolean;
-}
-```
-
-### ProcessTerminal
-
-```typescript
-class ProcessTerminal implements Terminal {
-  constructor() {
-    // 使用 process.stdin/process.stdout
-  }
-  
-  write(data: string): void {
-    process.stdout.write(data);
-  }
-  
-  get width(): number {
-    return process.stdout.columns;
-  }
-  
-  get height(): number {
-    return process.stdout.rows;
-  }
-}
-```
-
-## 键盘处理
-
-### keys.ts
-
-```typescript
-// 按键类型
-interface Key {
-  name: string;        // "Enter", "Backspace", "Space"
-  codepoint?: number;
-  ctrl?: boolean;
-  alt?: boolean;
-  shift?: boolean;
-}
-
-// 特殊按键
-const specialKeys: Record<string, Key> = {
-  Enter: { name: "Enter" },
-  Backspace: { name: "Backspace" },
-  Tab: { name: "Tab" },
-  Escape: { name: "Escape" },
-  ArrowUp: { name: "ArrowUp" },
-  ArrowDown: { name: "ArrowDown" },
-  ArrowLeft: { name: "ArrowLeft" },
-  ArrowRight: { name: "ArrowRight" },
-  Home: { name: "Home" },
-  End: { name: "End" },
-  PageUp: { name: "PageUp" },
-  PageDown: { name: "PageDown" },
-  Delete: { name: "Delete" },
-  Insert: { name: "Insert" },
-};
-
-// 修饰键处理
-function isKeyRelease(data: string): boolean { ... }
-function matchesKey(data: string, pattern: string | Key): boolean { ... }
-```
-
-### 按键序列解析
-
-```typescript
-// CSI 序列
-"\x1b[A"  // ArrowUp
-"\x1b[B"  // ArrowDown
-"\x1b[C"  // ArrowRight
-"\x1b[D"  // ArrowLeft
-"\x1b[H"  // Home
-"\x1b[F"  // End
-"\x1b[5~" // PageUp
-"\x1b[6~" // PageDown
-
-// SS3 序列 (xterm)
-"\x1bOA"  // ArrowUp
-"\x1bOB"  // ArrowDown
-"\x1bOC"  // ArrowRight
-"\x1bOD"  // ArrowLeft
-
-// Kitty 键盘协议
-"\x1b[<i;1u"  // 修饰键+ Key
-```
-
-### 处理流程
-
-```typescript
-terminal.onData((data) => {
-  // 1. 解析按键
-  const key = parseKey(data);
-  
-  // 2. 发送事件
-  if (key) {
-    terminal.onKey(key);
-  } else {
-    terminal.onData(data);
-  }
+const overlay = tui.showOverlay(component, {
+    width: "50%",
+    anchor: "center",
+    margin: 5,
 });
 
-function parseKey(data: string): Key | null {
-  // 解析 CSI/SS3 序列
-  if (data.startsWith("\x1b[")) {
-    // CSI 序列
-    const match = data.match(/^\x1b\[(\d+);(\d+)u$/);
-    if (match) {
-      return {
-        name: getKeyName(parseInt(match[1])),
-        ctrl: (parseInt(match[2]) & 1,
-        shift: (parseInt(match[2])) & 2,
-        alt: (parseInt(match[2])) & 4,
-      };
-    }
-  }
-  return null;
-}
+// 隐藏 overlay
+overlay.hide();
 ```
 
-## 覆盖层
+### 4.3 Overlay 渲染
 
-### OverlayHandle
+Overlay 通过 `compositeOverlays()` 方法合成到基础内容上,支持多层叠加和透明度处理。
 
-```typescript
-export interface OverlayHandle {
-  hide(): void;
-  setHidden(hidden: boolean): void;
-  isHidden(): boolean;
-  focus(): void;
-  unfocus(): void;
-  isFocused(): boolean;
-}
-```
+## 五、主题系统
 
-### 显示覆盖层
+pi-tui 使用**函数式主题**,每个样式元素都是接受字符串、返回字符串的函数。
+
+### 5.1 主题接口示例
 
 ```typescript
-const handle = tui.showOverlay(component, {
-  anchor: "center",
-  width: "50%",
-  maxHeight: "80%",
-});
-```
-
-## 工具函数
-
-### utils.ts
-
-```typescript
-// 字符串可见宽度
-function visibleWidth(str: string): number {
-  // 东亚文字宽度
-  return str.length;
-}
-
-// 列切片
-function sliceByColumn(lines: string[], start: number, end: number): string[];
-
-// 提取片段
-function extractSegments(lines: string[], pattern: string): Segment[];
-
-// 截断
-function truncateToWidth(str: string, width: number): string;
-```
-
-## 样式
-
-### 样式支持
-
-```typescript
-// ANSI 码
-const styles = {
-  reset: "\x1b[0m",
-  bold: "\x1b[1m",
-  dim: "\x1b[2m",
-  italic: "\x1b[3m",
-  underline: "\x1b[4m",
-  
-  // 前景色
-  black: "\x1b[30m",
-  red: "\x1b[31m",
-  green: "\x1b[32m",
-  yellow: "\x1b[33m",
-  blue: "\x1b[34m",
-  magenta: "\x1b[35m",
-  cyan: "\x1b[36m",
-  white: "\x1b[37m",
-  
-  // 背景色
-  bgBlack: "\x1b[40m",
-  // ...
+// packages/tui/test/test-themes.ts
+export const defaultSelectListTheme: SelectListTheme = {
+    selectedPrefix: (text: string) => chalk.blue(text),
+    selectedText: (text: string) => chalk.bold(text),
+    description: (text: string) => chalk.dim(text),
+    scrollInfo: (text: string) => chalk.dim(text),
+    noMatch: (text: string) => chalk.dim(text),
 };
-
-// 使用
-const styledText = `${styles.bold}Hello${styles.reset} World`;
 ```
 
-## 主题支持
+### 5.2 主题应用
 
-### 主题配置
+主题在组件渲染时应用:
 
 ```typescript
-interface Theme {
-  // 颜色
-  colors: {
-    background: string;
-    foreground: string;
-    selection: string;
-    // ...
-  };
-  
-  // 字体
-  fonts: {
-    normal: string;
-    bold: string;
-    italic: string;
-  };
-  
-  // 样式映射
-  styles: Record<string, string>;
-}
+// 组件内部渲染逻辑
+const rendered = this.theme.selectedText(this.item.label);
+return this.theme.selectedPrefix("▸ ") + rendered;
 ```
 
-### 主题使用
+### 5.3 可定制主题
+
+- **SelectListTheme**: 选择列表样式
+- **MarkdownTheme**: Markdown 渲染样式
+- **EditorTheme**: 编辑器样式 (包含 borderColor 和 SelectListTheme)
+- **ImageTheme**: 图像渲染样式
+
+## 六、键盘输入处理
+
+### 6.1 keys.ts
+
+支持两种键盘协议:
+
+- **Legacy 序列**: 传统终端转义序列
+- **Kitty 键盘协议**: 增强的键盘协议,支持更多修饰键组合
 
 ```typescript
-class ThemedComponent implements Component {
-  constructor(private theme: Theme) {}
-  
-  render(width: number): string[] {
-    return [
-      this.theme.colors.background + "..." + this.theme.colors.foreground
-    ];
-  }
-}
+// 支持的键标识符
+type KeyId = "ctrl+c" | "escape" | "up" | "down" | "ctrl+shift+a" | ...;
 ```
 
-## 自动补全
-
-### Autocomplete
+### 6.2 Key 辅助对象
 
 ```typescript
-interface AutocompleteItem {
-  label: string;
-  description?: string;
-  action?: () => void;
-}
+import { matchesKey, parseKey, Key } from "@anthropic-ai/pi-tui";
 
-interface AutocompleteOptions {
-  items: AutocompleteItem[];
-  fuzzy?: boolean;
-}
+if (matchesKey(data, "ctrl+c")) { /* 处理 Ctrl+C */ }
+const keyId = parseKey(data); // 解析输入为键标识符
+```
 
-class Autocomplete implements Component {
-  constructor(options: AutocompleteOptions) {}
-  
-  filter(query: string): AutocompleteItem[] { ... }
-  render(width: number): string[] { ... }
+### 6.3 自动补全
+
+```typescript
+// packages/tui/src/autocomplete.ts
+export interface AutocompleteProvider {
+    getAutocompletions(input: string): Promise<AutocompleteSuggestions>;
 }
 ```
 
-## 总结
+## 七、终端能力检测
 
-pi-tui 核心设计：
+### 7.1 支持的协议
 
-1. **Component 接口** - 渲染、行处理、焦点管理
-2. **Container/TUI** - 容器和焦点管理
-3. **预置组件** - Text, Box, Input, SelectList, Editor
-4. **差分渲染** - 优化终端输出
-5. **键盘处理** - 按键解析 (CSI/SS3/Kitty)
+| 协议 | 能力 |
+|------|------|
+| iTerm2 | 图像 (Inline Images) |
+| Kitty | 图像, 键盘协议 |
+| Windows Terminal | 有限支持 |
+| GNOME Terminal | 有限支持 |
 
-关键特性：
-- 组件化设计
-- 焦点管理
-- 键盘输入
-- 差分渲染
-- 主题支持
+### 7.2 能力检测
+
+```typescript
+// packages/tui/src/terminal-image.ts
+import { getCapabilities, detectCapabilities } from "@anthropic-ai/pi-tui";
+
+const caps = getCapabilities();
+// caps.images: 是否支持终端图像
+// caps.kittyProtocol: 是否支持 Kitty 协议
+```
+
+### 7.3 图像渲染
+
+```typescript
+import { renderImage, encodeKitty, encodeITerm2 } from "@anthropic-ai/pi-tui";
+
+const encoded = encodeKitty(imageBuffer);
+// 使用终端协议编码图像
+```
+
+## 八、实用工具
+
+### 8.1 文本处理
+
+```typescript
+import { truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@anthropic-ai/pi-tui";
+
+const width = visibleWidth("你好"); // 4 (CJK 字符视为双宽)
+const truncated = truncateToWidth("很长很长的文本", 10); // 截断到指定宽度
+const wrapped = wrapTextWithAnsi("文本内容", 80); // ANSI 感知的换行
+```
+
+### 8.2 键绑定
+
+```typescript
+import { getKeybindings, setKeybindings, KeybindingsManager } from "@anthropic-ai/pi-tui";
+
+const bindings = getKeybindings("editor");
+setKeybindings("custom", customBindings);
+```
+
+### 8.3 模糊匹配
+
+```typescript
+import { fuzzyFilter, fuzzyMatch } from "@anthropic-ai/pi-tui";
+
+const matches = fuzzyFilter("pyt", ["python", "python3", "pyramid"]);
+// returns ["python", "pyramid"]
+```
+
+## 九、参考实现
+
+- **TUI 核心**: `packages/tui/src/tui.ts`
+- **组件**: `packages/tui/src/components/*.ts`
+- **键盘处理**: `packages/tui/src/keys.ts`
+- **终端图像**: `packages/tui/src/terminal-image.ts`
+- **组件测试**: `packages/tui/test/*.test.ts`
+
+## 十、总结
+
+pi-tui 是一个设计精良的终端 UI 库,其核心特点:
+
+1. **高效差分渲染**: 三层策略确保最小化终端输出
+2. **组件化设计**: 统一的组件接口,易于扩展
+3. **主题函数式**: 灵活的主题定制机制
+4. **协议支持**: 多终端协议的自动检测和适配
+5. **IME 兼容**: 正确的硬件光标位置支持输入法
+
+该系统的设计对于构建高效的终端应用具有良好的参考价值。

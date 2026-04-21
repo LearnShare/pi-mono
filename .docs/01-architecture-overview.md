@@ -77,7 +77,7 @@ pi-monorepo/
 ┌─────────────────────────────────────────────────────┐
 │                  pi-ai                      │
 │  (统一 LLM API)                                  │
-├────────────────────────────────────────────────���────┤
+├─────────────────────────────────────────────────────┤
 │  dependencies:                                 │
 │    anthropic-sdk, openai, google-genai          │
 │    @mistralai/mistralai                          │
@@ -96,74 +96,219 @@ pi-monorepo/
 
 ## 核心数据流
 
+### 完整请求-响应链路
+
 ```
-┌─────────────┐
-│ 用户输入    │
-└──────┬──────┘
-       │
-       ▼
-┌─────────────────────────────────────────────────────┐
-│           pi-coding-agent                      │
-│  ┌─────────────────────────────────────────────┐  │
-│  │ main.ts - CLI 入口                         │  │
-│  │ - 参数解析                              │  │
-│  │ - 模式选择 (interactive/print/rpc/json) │  │
-│  └──────┬──────────────────────────────────┘  │
-│         ▼                                     │
-│  ┌─────────────────────────────────────────────┐ │
-│  │ AgentSession 运行时                      │ │
-│  │ - 会话管理                                │ │
-│  │ - 事件处理                                │ │
-│  │ - 工具注册                               │ │
-│  └──────┬──────────────────────────────────┘  │
-└─────────┼─────────────────────────────────────────┘
-          │
-          ▼
-┌─────────────────────────────────────────────────────┐
-│           pi-agent-core                     │
-│  ┌─────────────────────────────────────────────┐ │
-│  │ Agent 类                                 │ │
-│  │ - 状态管理                               │ │
-│  │ - 消息队列 (steering/followUp)           │ │
-│  └──────┬──────────────────────────────────┘ │
-│         ▼                                      │
-│  ┌─────────────────────────────────────────────┐ │
-│  │ runAgentLoop()                            │ │
-│  │ - 流式 LLM 调用                         │ │
-│  │ - 工具执行                              │ │
-│  └──────┬───────���─��────────────────────────┘ │
-└─────────┼─────────────────────────────────────────┘
-          │
-          ▼
-┌─────────────────────────────────────────────────────┐
-│                pi-ai                          │
-│  ┌─────────────────────────────────────────────┐   │
-│  │ streamSimple(model, context, options)     │   │
-│  │ - 提供商解析                              │   │
-│  │ - 参数转换                              │   │
-│  │ - 流式事件                             │   │
-│  └──────┬──────────────────────────────────┘    │
-│         ▼                                       │
-│  ┌─────────────────────────────────────────────┐  │
-│  │ API Provider 实现                        │  │
-│  │ - anthropic.ts                           │  │
-│  │ - openai-responses.ts                   │  │
-│  │ - google.ts                             │  │
-│  │ - ...                                   │  │
-│  └──────┬──────────────────────────────────┘  │
-└─────────┼─────────────────────────────────────────┘
-          │
-          ▼
-┌─────────────────────────────────────────────────────┐
-│            LLM Providers                         │
-│  ┌────────┐ ┌────────┐ ┌────────┐ ┌────────┐   │
-│  │OpenAI  │ │Anthropic│ │Google  │ │Mistral │   │
-│  └────────┘ └────────┘ └────────┘ └────────┘   │
-│  ┌────────┐ ┌────────┐ ┌────────┐ ┌────────┐   │
-│  │ Bedrock│ │ Azure  │ │ xAI   │ │ Groq   │   │
-│  └────────┘ └────────┘ └────────┘ └────────┘   │
-└─────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────────────────┐
+│ 用户交互层                                                             │
+│  ┌─────────────────────────────────────────────────────────────────┐   │
+│  │ InteractiveMode / PrintMode / RpcMode                          │   │
+│  │ - TUI 渲染/输出格式化                                      │   │
+│  │ - 命令解析 (/, !, @file)                                   │   │
+│  └──────────────────────────────┬──────────────────────────────────┘   │
+└───────────────────────────────┬───────────────────────────────────────────┘
+                               │
+                               ▼
+┌─────────────────────────────────────────────────────────────────────────┐
+│ pi-coding-agent: AgentSession                                         │
+│  ┌─────────────────────────────────────────────────────────────────┐   │
+│  │ AgentSession.run()                                             │   │
+│  │ - 消息构建 (用户输入 + 系统提示 + 历史消息)                    │   │
+│  │ - 工具注册与路由                                               │   │
+│  │ - 会话持久化 (SessionManager)                                  │   │
+│  └──────────────────────────────┬──────────────────────────────────┘   │
+└───────────────────────────────┬───────────────────────────────────────────┘
+                               │
+                               ▼
+┌─────────────────────────────────────────────────────────────────────────┐
+│ pi-agent-core: Agent                                                 │
+│  ┌─────────────────────────────────────────────────────────────────┐   │
+│  │ Agent.run() / agentLoop()                                       │   │
+│  │ - 状态管理 (messages, model, thinkingLevel)                      │   │
+│  │ - 消息转换 (AgentMessage[] → Message[])                        │   │
+│  │ - 工具执行队列管理 (steeringQueue, followUpQueue)               │   │
+│  │ - 事件发射 (agent_start, turn_start, message_*, etc.)        │   │
+│  └──────────────────────────────┬──────────────────────────────────┘   │
+│                                │                                        │
+│                                ▼                                        │
+│  ┌─────────────────────────────────────────────────────────────────┐   │
+│  │ runAgentLoop()                                                 │   │
+│  │ - 流式 LLM 调用 (streamSimple)                                   │   │
+│  │ - 工具调用检测与执行                                           │   │
+│  │ - 循环处理 (tool calls → results → LLM → ...)                  │   │
+│  └──────────────────────────────┬──────────────────────────────────┘   │
+└───────────────────────────────┬───────────────────────────────────────────┘
+                               │
+                               ▼
+┌─────────────────────────────────────────────────────────────────────────┐
+│ pi-ai: 统一 API 层                                                    │
+│  ┌─────────────────────────────────────────────────────────────────┐   │
+│  │ streamSimple(model, context, options)                            │   │
+│  │ - 提供商解析 (getApiProvider)                                   │   │
+│  │ - 参数转换 (thinking, tools, images)                           │   │
+│  │ - 流式事件发射                                                 │   │
+│  └──────────────────────────────┬──────────────────────────────────┘   │
+└───────────────────────────────┬───────────────────────────────────────────┘
+                               │
+                               ▼
+┌─────────────────────────────────────────────────────────────────────────┐
+│ API Provider 实现                                                    │
+│  ┌──────────┐ ┌──────────┐ ┌──────────┐ ┌──────────┐ ┌──────────┐ │
+│  │anthropic │ │openai-   │ │ google   │ │ mistral  │ │ 20+ others│ │
+│  │         │ │responses │ │         │ │         │ │          │ │
+│  └────┬────┘ └────┬─────┘ └────┬────┘ └───┬────┘ └────┬─────┘ │
+└───────┼───────────┼───────────┼──────────┼───────────┼────────┘
+        │           │           │          │           │
+        ▼           ▼           ▼          ▼           ▼
+┌─────────────────────────────────────────────────────────────────────────┐
+│ LLM Providers                                                        │
+│  ┌────────┐ ┌────────┐ ┌────────┐ ┌────────┐ ┌────────┐ ┌────────┐   │
+│  │OpenAI  │ │Anthropic│ │Google  │ │Mistral │ │ Bedrock│ │ 20+    │   │
+│  └────────┘ └────────┘ └────────┘ └────────┘ └────────┘ └────────┘   │
+└─────────────────────────────────────────────────────────────────────────┘
 ```
+
+### 消息序列化与反序列化
+
+消息在系统中有两种表示形式：
+
+1. **AgentMessage** - Agent 内部使用，包含自定义消息类型
+   - `user` / `assistant` / `toolResult` - 标准消息
+   - `bashExecution` - Bash 执行结果
+   - `custom` - 扩展注入的自定义消息
+   - `branchSummary` / `compactionSummary` - 分支/压缩摘要
+
+2. **Message** - LLM API 兼容格式，仅包含 user/assistant/toolResult
+
+**转换流程** (`convertToLlm`):
+
+```typescript
+// sdk.ts:291-298
+const convertToLlmWithBlockImages = (messages: AgentMessage[]): Message[] => {
+  return messages
+    .map((m): Message | undefined => {
+      switch (m.role) {
+        case "bashExecution":
+          // 转换为 user 消息，命令输出作为文本
+          return { role: "user", content: [{ type: "text", text: bashExecutionToText(m) }] };
+        case "custom":
+          // 扩展自定义消息转换为 user 消息
+          return { role: "user", content: [...] };
+        case "branchSummary":
+        case "compactionSummary":
+          // 摘要消息包装为 user 消息
+          return { role: "user", content: [{ type: "text", text: SUMMARY_PREFIX + m.summary + "..." }] };
+        case "user":
+        case "assistant":
+        case "toolResult":
+          return m; // 直接传递
+      }
+    })
+    .filter((m) => m !== undefined);
+};
+```
+
+**关键位置**：
+- 消息定义：`packages/coding-agent/src/core/messages.ts`
+- 消息转换：`packages/coding-agent/src/core/messages.ts:148-195`
+- 转换注册：`packages/coding-agent/src/core/sdk.ts:253-287`
+
+### 事件流设计与传播
+
+事件流采用发布-订阅模式，贯穿整个 Agent 生命周期：
+
+#### 事件类型 (AgentEvent)
+
+| 事件 | 阶段 | 说明 |
+|------|------|------|
+| `agent_start` | 开始 | Agent 开始处理 |
+| `turn_start` | 轮次 | 单轮对话开始 |
+| `message_start` | 消息 | 新消息添加到上下文 |
+| `message_update` | 消息 | 流式响应更新 |
+| `message_end` | 消息 | 消息完成 |
+| `turn_end` | 轮次 | 工具调用完成后 |
+| `agent_end` | 结束 | Agent 完成处理 |
+
+#### 事件流创建 (`agent-loop.ts:31-54`)
+
+```typescript
+export function agentLoop(
+  prompts: AgentMessage[],
+  context: AgentContext,
+  config: AgentLoopConfig,
+  signal?: AbortSignal,
+  streamFn?: StreamFn,
+): EventStream<AgentEvent, AgentMessage[]> {
+  const stream = createAgentStream();
+
+  void runAgentLoop(
+    prompts,
+    context,
+    config,
+    async (event) => {
+      stream.push(event); // 事件发射
+    },
+    signal,
+    streamFn,
+  ).then((messages) => {
+    stream.end(messages); // 最终消息
+  });
+
+  return stream;
+}
+```
+
+#### 事件传播机制
+
+1. **监听器注册**: Agent 维护 `listeners` 集合
+   ```typescript
+   // agent.ts:160
+   private readonly listeners = new Set<(event: AgentEvent, signal: AbortSignal) => ...>();
+   ```
+
+2. **事件发射**: 通过 `emit()` 调用所有监听器
+   ```typescript
+   // agent-loop.ts:109-114
+   await emit({ type: "agent_start" });
+   await emit({ type: "turn_start" });
+   for (const prompt of prompts) {
+     await emit({ type: "message_start", message: prompt });
+   }
+   ```
+
+3. **流式事件**: LLM 流式响应通过事件迭代器逐个发射
+   ```typescript
+   // agent-loop.ts:276-298
+   for await (const event of response) {
+     switch (event.type) {
+       case "text_delta":
+         // 更新 streaming message
+         await emit({ type: "message_update", assistantMessageEvent: event });
+         break;
+       // ... 其他事件类型
+     }
+   }
+   ```
+
+#### 扩展事件系统
+
+Extensions 可以订阅生命周期事件：
+
+```typescript
+// extensions/runtime.ts
+on(event: string, handler: (data: any) => ...): void
+emit(event: string, data: any): Promise<void>
+```
+
+可订阅事件：
+- `before_provider_request` - LLM 请求前
+- `after_provider_response` - LLM 响应后
+- `context` - 上下文构建
+
+**关键位置**:
+- Agent 事件定义：`packages/agent/src/types.ts`
+- 事件循环：`packages/agent/src/agent-loop.ts`
+- EventStream：`packages/ai/src/utils/event-stream.ts`
 
 ## 工作模式
 

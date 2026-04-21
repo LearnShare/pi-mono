@@ -16,7 +16,7 @@
 | 任务 | 文档 | 状态 | 备注 |
 |------|------|------|------|
 | pi-ai 类型系统与 LLM 提供商 | 02-pi-ai-typesystem.md | 待完成 | |
-| pi-agent-core 运行时 | 03-agent-core.md | 待完成 | |
+| pi-agent-core 运行时 | 03-agent-core.md | 已完成 | |
 | coding-agent CLI | 04-coding-agent-cli.md | 待完成 | |
 | pi-tui 终端 UI 系统 | 05-tui-system.md | 待完成 | |
 | 扩展与技能系统 | 06-extensions-skills.md | 待完成 | |
@@ -45,9 +45,9 @@
 
 ### 03-agent-core.md
 
-- [ ] 说明 Agent 运行时的核心组件
-- [ ] 解释状态管理的实现
-- [ ] 包含工具执行流程描述
+- [x] 说明 Agent 运行时的核心组件
+- [x] 解释状态管理的实现
+- [x] 包含工具执行流程描述
 
 ### 04-coding-agent-cli.md
 

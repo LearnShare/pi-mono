@@ -63,9 +63,9 @@
 
 ### 06-extensions-skills.md
 
-- [ ] 说明 Extensions 的实现原理
-- [ ] 解释 Skills 的编写和使用方式
-- [ ] 包含扩展机制的最佳实践
+- [x] 说明 Extensions 的实现原理
+- [x] 解释 Skills 的编写和使用方式
+- [x] 包含扩展机制的最佳实践
 
 ### 07-technical-summary.md
 

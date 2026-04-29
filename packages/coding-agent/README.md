@@ -1,6 +1,6 @@
 <p align="center">
-  <a href="https://shittycodingagent.ai">
-    <img src="https://shittycodingagent.ai/logo.svg" alt="pi logo" width="128">
+  <a href="https://pi.dev">
+    <img src="https://pi.dev/logo.svg" alt="pi logo" width="128">
   </a>
 </p>
 <p align="center">
@@ -107,12 +107,14 @@ For each built-in provider, pi maintains a list of tool-capable models, updated 
 - Anthropic
 - OpenAI
 - Azure OpenAI
+- DeepSeek
 - Google Gemini
 - Google Vertex
 - Amazon Bedrock
 - Mistral
 - Groq
 - Cerebras
+- Cloudflare Workers AI
 - xAI
 - OpenRouter
 - Vercel AI Gateway
@@ -120,6 +122,7 @@ For each built-in provider, pi maintains a list of tool-capable models, updated 
 - OpenCode Zen
 - OpenCode Go
 - Hugging Face
+- Fireworks
 - Kimi For Coding
 - MiniMax
 
@@ -215,7 +218,7 @@ Configure delivery in [settings](docs/settings.md): `steeringMode` and `followUp
 
 ## Sessions
 
-Sessions are stored as JSONL files with a tree structure. Each entry has an `id` and `parentId`, enabling in-place branching without creating new files. See [docs/session.md](docs/session.md) for file format.
+Sessions are stored as JSONL files with a tree structure. Each entry has an `id` and `parentId`, enabling in-place branching without creating new files. See [docs/session-format.md](docs/session-format.md) for file format.
 
 ### Management
 
@@ -379,11 +382,15 @@ pi install ssh://git@github.com/user/repo@v1    # tag or commit
 pi remove npm:@foo/pi-tools
 pi uninstall npm:@foo/pi-tools          # alias for remove
 pi list
-pi update                               # skips pinned packages
+pi update                               # update pi and packages (skips pinned packages)
+pi update --extensions                  # update packages only
+pi update --self                        # update pi only
+pi update --self --force                # reinstall pi even if current
+pi update npm:@foo/pi-tools             # update one package
 pi config                               # enable/disable extensions, skills, prompts, themes
 ```
 
-Packages install to `~/.pi/agent/git/` (git) or global npm. Use `-l` for project-local installs (`.pi/git/`, `.pi/npm/`). Git packages install dependencies with `npm install --omit=dev`, so runtime deps must be listed under `dependencies`. If you use a Node version manager and want package installs to reuse a stable npm context, set `npmCommand` in `settings.json`, for example `["mise", "exec", "node@20", "--", "npm"]`.
+Packages install to `~/.pi/agent/git/` (git) or global npm. Use `-l` for project-local installs (`.pi/git/`, `.pi/npm/`). Git packages install dependencies with `npm install --omit=dev` by default, so runtime deps must be listed under `dependencies`; when `npmCommand` is configured, git packages use plain `install` for compatibility with wrappers. If you use a Node version manager and want package installs to reuse a stable npm context, set `npmCommand` in `settings.json`, for example `["mise", "exec", "node@20", "--", "npm"]`.
 
 Create a package by adding a `pi` key to `package.json`:
 
@@ -474,7 +481,11 @@ pi [options] [@files...] [messages...]
 pi install <source> [-l]     # Install package, -l for project-local
 pi remove <source> [-l]      # Remove package
 pi uninstall <source> [-l]   # Alias for remove
-pi update [source]           # Update packages (skips pinned)
+pi update [source|self|pi]   # Update pi and packages (skips pinned packages)
+pi update --extensions       # Update packages only
+pi update --self             # Update pi only
+pi update --self --force     # Reinstall pi even if current
+pi update --extension <src>  # Update one package
 pi list                      # List installed packages
 pi config                    # Enable/disable package resources
 ```
@@ -521,8 +532,9 @@ cat README.md | pi -p "Summarize this text"
 
 | Option | Description |
 |--------|-------------|
-| `--tools <list>` | Enable specific built-in tools (default: `read,bash,edit,write`) |
-| `--no-tools` | Disable all built-in tools (extension tools still work) |
+| `--tools <list>`, `-t <list>` | Allowlist specific tool names across built-in, extension, and custom tools |
+| `--no-builtin-tools`, `-nbt` | Disable built-in tools by default but keep extension/custom tools enabled |
+| `--no-tools`, `-nt` | Disable all tools by default |
 
 Available built-in tools: `read`, `bash`, `edit`, `write`, `grep`, `find`, `ls`
 

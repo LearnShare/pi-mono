@@ -288,18 +288,151 @@ Create a React component named $1 with features: $@
 
 ---
 
-## 7. 关键源码位置
+## 7. 内置 Prompt 完整内容
 
-| 文件 | 作用 |
-|------|------|
-| `packages/coding-agent/src/core/system-prompt.ts` | 系统提示构建 |
-| `packages/coding-agent/src/core/prompt-templates.ts` | Prompt Template 加载与展开 |
-| `packages/coding-agent/src/core/skills.ts` | Skill 加载与格式化 |
-| `packages/coding-agent/src/core/resource-loader.ts` | 资源发现 |
+### 7.1 主系统提示（buildSystemPrompt）
+
+完整的默认系统提示内容：
+
+```text
+You are an expert coding assistant operating inside pi, a coding agent harness. You help users by reading files, executing commands, editing code, and writing new files.
+
+Available tools:
+- read: Read file contents
+- bash: Execute shell commands
+- edit: Edit files
+- write: Write files
+
+In addition to the tools above, you may have access to other custom tools depending on the project.
+
+Guidelines:
+- Be concise in your responses
+- Show file paths clearly when working with files
+- [动态生成的工具相关准则]
+
+Pi documentation (read only when the user asks about pi itself, its SDK, extensions, themes, skills, or TUI):
+- Main documentation: {readmePath}
+- Additional docs: {docsPath}
+- Examples: {examplesPath} (extensions, custom tools, SDK)
+- When asked about: extensions (docs/extensions.md, examples/extensions/), themes (docs/themes.md), skills (docs/skills.md), prompt templates (docs/prompt-templates.md), TUI components (docs/tui.md), keybindings (docs/keybindings.md), SDK integrations (docs/sdk.md), custom providers (docs/custom-provider.md), adding models (docs/models.md), pi packages (docs/packages.md)
+- When working on pi topics, read the docs and examples, and follow .md cross-references before implementing
+- Always read pi .md files completely and follow links to related docs (e.g., tui.md for TUI API details)
+
+[APPEND_SYSTEM.md 追加内容]
+
+# Project Context
+
+Project-specific instructions and guidelines:
+
+## {filePath}
+{AGENTS.md/CLAUDE.md 内容}
+
+# Skills
+{Skill 列表}
+
+Current date: {date}
+Current working directory: {cwd}
+```
+
+### 7.2 工具提示片段（promptSnippet）
+
+每个内置工具的 `promptSnippet` 出现在 "Available tools" 列表中：
+
+| 工具 | promptSnippet |
+|------|--------------|
+| `read` | "Read file contents" |
+| `write` | "Create or overwrite files" |
+| `edit` | "Edit existing files" |
+| `bash` | "Execute bash commands (ls, grep, find, etc.)" |
+| `grep` | "Search file contents for patterns (respects .gitignore)" |
+| `find` | "Find files by glob pattern (respects .gitignore)" |
+| `ls` | "List directory contents" |
+
+### 7.3 工具提示准则（promptGuidelines）
+
+每个工具的 `promptGuidelines` 出现在 "Guidelines" 列表中：
+
+| 工具 | promptGuidelines |
+|------|-----------------|
+| `read` | "Use read to examine files instead of cat or sed." |
+| `write` | "Use write only for new files or complete rewrites." |
+| `edit` | "Use edit for small, targeted changes. Use write for complete rewrites." |
+
+### 7.4 动态生成的准则
+
+根据可用工具动态生成的文件探索准则：
+
+```typescript
+// 当 bash 存在但 grep/find/ls 不存在时：
+"Use bash for file operations like ls, rg, find"
+
+// 当 bash 和 (grep 或 find 或 ls) 同时存在时：
+"Prefer grep/find/ls tools over bash for file exploration (faster, respects .gitignore)"
+```
+
+### 7.5 压缩摘要提示（SUMMARIZATION_SYSTEM_PROMPT）
+
+用于会话压缩时的 LLM 摘要提示：
+
+```text
+You are a context summarization assistant. Your task is to read a conversation between a user and an AI coding assistant, then produce a structured summary following the exact format specified.
+
+Do NOT continue the conversation. Do NOT respond to any questions in the conversation. ONLY output the structured summary.
+```
+
+### 7.6 工具结果序列化格式
+
+压缩时用于序列化对话的格式：
+
+```
+[User]: {用户消息内容}
+
+[Assistant thinking]: {思考内容}
+
+[Assistant]: {助手回复文本}
+
+[Assistant tool calls]: {toolName(arg1=val1, arg2=val2); ...}
+
+[Tool result]: {工具结果内容} (最多 2000 字符)
+```
+
+### 7.7 固定准则
+
+始终包含的准则：
+
+```text
+- Be concise in your responses
+- Show file paths clearly when working with files
+```
+
+### 7.8 路径变量
+
+系统提示中的动态路径变量：
+
+| 变量 | 来源 | 说明 |
+|------|------|------|
+| `{readmePath}` | `getReadmePath()` | 文档首页路径 |
+| `{docsPath}` | `getDocsPath()` | 文档目录路径 |
+| `{examplesPath}` | `getExamplesPath()` | 示例目录路径 |
+| `{date}` | `new Date()` | 当前日期 (YYYY-MM-DD) |
+| `{cwd}` | `options.cwd` | 当前工作目录 |
 
 ---
 
-## 8. 研究问题解答
+## 8. 关键源码位置
+
+| 文件 | 作用 |
+|------|------|
+| `packages/coding-agent/src/core/system-prompt.ts` | 系统提示构建（172行，包含完整提示内容） |
+| `packages/coding-agent/src/core/prompt-templates.ts` | Prompt Template 加载与展开 |
+| `packages/coding-agent/src/core/skills.ts` | Skill 加载与格式化 |
+| `packages/coding-agent/src/core/resource-loader.ts` | 资源发现 |
+| `packages/coding-agent/src/core/compaction/utils.ts` | SUMMARIZATION_SYSTEM_PROMPT 定义 |
+| `packages/coding-agent/src/core/tools/*.ts` | 工具的 promptSnippet 和 promptGuidelines |
+
+---
+
+## 9. 研究问题解答
 
 ### Q1: 最终的 Prompt 顺序是什么？
 
